@@ -19,11 +19,8 @@ def _hs_files(root):
     """
     List the .hs healsparse files under a survey property map root.
 
-    ``root`` may be a directory -- what the survey_property_maps FileCollection
-    from TXIngestDataPreview1 gives us -- or a filename prefix, which is the
-    convention supreme_path_root uses elsewhere in TXPipe (TXMapCorrelations,
-    TXLSSWeights). Both spellings are accepted so a path that works for those
-    stages works here too.
+    ``root`` may be a directory, e.g. what the survey_property_maps FileCollection
+    from ingestion stage, or a filename prefix.
     """
     if not root:
         return []
@@ -33,7 +30,7 @@ def _hs_files(root):
 
 def _band_of(stem):
     """
-    The photometric band a map filename ends in, or None if it has no band
+    The band a survey property map ends in, or None if no band
     suffix. DP1 writes one file per band, named e.g. ..._weighted_mean_i.
     """
     band = stem.rpartition("_")[2]
@@ -42,19 +39,15 @@ def _band_of(stem):
 
 def _shorten_map_name(stem):
     """
-    Trim a DP1 survey property filename down to a readable property name.
+    Trim a survey property filename down for plotting.
 
-    DP1 names every map ``deepCoadd_<property>_consolidated_map_<reduction>_<band>``,
-    which is too long to use as a plot title or an HDF5 group name. We drop the
-    constant parts -- the deepCoadd_ prefix, the _consolidated_map infix, and
-    the _weighted_mean reduction -- giving e.g. psf_size_i.
+    E.g. replaces ``deepCoadd_<property>_consolidated_map_<reduction>_<band>`` 
+    with <property>_<reduction>_<band>, such as epoch_max_i.
 
-    The reduction is kept when it is not weighted_mean, because it is the only
-    thing distinguishing some maps from each other: the three epoch maps would
-    otherwise all collapse onto "epoch_i".
+    The <reduction> is kept when it is not weighted_mean.
 
     Names without _consolidated_map in them are left alone, so SUPREME/DC2 maps
-    reached through external_maps_dir keep the names they have always had.
+    keep the names they have always had.
     """
     if "_consolidated_map" not in stem:
         return stem
@@ -66,11 +59,7 @@ def _shorten_map_name(stem):
 
 def _hs_map_names(paths):
     """
-    Choose the property name to register each .hs file under.
-
-    Shortened as above, except where two files would shorten to the same name:
-    then every file involved in the collision keeps its full stem, since
-    otherwise one map would silently overwrite the other.
+    Choose the name to register each .hs file under.
     """
     stems = {path: pathlib.Path(path).stem for path in paths}
     short = {path: _shorten_map_name(stem) for path, stem in stems.items()}
@@ -369,36 +358,26 @@ def _draw_allsky_map(ax, fig, hsp_map, nside, pixels, title, cmap, width):
 
 class TXMeanShearSurveyProperties(PipelineStage):
     """
-    Compute mean calibrated shear in bins of survey property maps.
+    Compute the mean shear in bins of survey property maps.
 
-    This null test checks whether the mean shear correlates with
-    spatially-varying survey conditions such as PSF size, depth, or sky
-    background. A non-zero trend indicates a potential systematic bias.
+    This null test checks if the mean shear correlates with spatially-varying
+    survey conditions such as PSF size, depth, or sky background.
 
-    Survey properties come from two kinds of source, and both are optional, so
-    the stage runs whatever subset of them a pipeline actually provides:
+    Survey properties can come from both of:
 
-    - The psf_maps and depth_map inputs, from TXPSFMaps and TXDepthMaps.
+    - A psf_maps and depth_map input, from TXPSFMaps and TXDepthMaps.
     - A directory of .hs healsparse files. This is the survey_property_maps
       FileCollection written by TXIngestDataPreview1 when that input is wired
       up, and otherwise the directory named by the external_maps_dir config
       option. Use external_maps_dir for SUPREME-style maps or for any survey
       whose maps did not come from DP1 ingestion.
 
-    Every map input is optional: alias any of survey_property_maps, psf_maps or
-    depth_map to "none" in the pipeline to skip it. So the test can run on
-    ingested DP1 maps without having built the aux maps first, or on the aux
-    maps alone without having run DP1 ingestion.
+    These map inputs are optional: alias the tags survey_property_maps, psf_maps or
+    depth_map to "none" in "inputs:" in pipeline.yml to ignore any input.
 
     The bands config option filters the .hs files down to chosen bands, since
     DP1 ingestion writes every property in all six of ugrizy. Files with no
     recognised band suffix are always kept.
-
-    For each property the bin edges are chosen from the values it takes at the
-    galaxies that enter the measurement -- galaxies in a source bin, on pixels
-    the map observes -- so the bins span exactly the region being tested. Every
-    property is therefore self-consistently binned and tested over its own
-    observed sample, with no survey mask required.
     """
 
     name = "TXMeanShearSurveyProperties"
