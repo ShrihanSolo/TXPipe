@@ -1,4 +1,6 @@
+import collections
 import glob
+import os
 import pathlib
 import numpy as np
 from ceci.config import StageParameter
@@ -9,6 +11,74 @@ from .shear_calibration import MeanShearInBins, metadetect_variants, META_VARIAN
 from .utils import read_shear_catalog_type
 from .utils.fitting import fit_straight_line, calc_chi2
 from .diagnostics import where_all_finite
+
+BANDS = "ugrizy"
+
+
+def _hs_files(root):
+    """
+    List the .hs healsparse files under a survey property map root.
+
+    ``root`` may be a directory -- what the survey_property_maps FileCollection
+    from TXIngestDataPreview1 gives us -- or a filename prefix, which is the
+    convention supreme_path_root uses elsewhere in TXPipe (TXMapCorrelations,
+    TXLSSWeights). Both spellings are accepted so a path that works for those
+    stages works here too.
+    """
+    if not root:
+        return []
+    pattern = f"{root.rstrip('/')}/*.hs" if os.path.isdir(root) else f"{root}*.hs"
+    return sorted(glob.glob(pattern))
+
+
+def _band_of(stem):
+    """
+    The photometric band a map filename ends in, or None if it has no band
+    suffix. DP1 writes one file per band, named e.g. ..._weighted_mean_i.
+    """
+    band = stem.rpartition("_")[2]
+    return band if band in BANDS and len(band) == 1 else None
+
+
+def _shorten_map_name(stem):
+    """
+    Trim a DP1 survey property filename down to a readable property name.
+
+    DP1 names every map ``deepCoadd_<property>_consolidated_map_<reduction>_<band>``,
+    which is too long to use as a plot title or an HDF5 group name. We drop the
+    constant parts -- the deepCoadd_ prefix, the _consolidated_map infix, and
+    the _weighted_mean reduction -- giving e.g. psf_size_i.
+
+    The reduction is kept when it is not weighted_mean, because it is the only
+    thing distinguishing some maps from each other: the three epoch maps would
+    otherwise all collapse onto "epoch_i".
+
+    Names without _consolidated_map in them are left alone, so SUPREME/DC2 maps
+    reached through external_maps_dir keep the names they have always had.
+    """
+    if "_consolidated_map" not in stem:
+        return stem
+    name = stem.replace("_consolidated_map", "", 1)
+    if name.startswith("deepCoadd_"):
+        name = name[len("deepCoadd_"):]
+    return name.replace("_weighted_mean", "", 1)
+
+
+def _hs_map_names(paths):
+    """
+    Choose the property name to register each .hs file under.
+
+    Shortened as above, except where two files would shorten to the same name:
+    then every file involved in the collision keeps its full stem, since
+    otherwise one map would silently overwrite the other.
+    """
+    stems = {path: pathlib.Path(path).stem for path in paths}
+    short = {path: _shorten_map_name(stem) for path, stem in stems.items()}
+    counts = collections.Counter(short.values())
+    return {
+        path: (stems[path] if counts[name] > 1 else name)
+        for path, name in short.items()
+    }
 
 
 def _bin_edges_from_values(vals, nbins, outlier_fraction):
@@ -305,13 +375,24 @@ class TXMeanShearSurveyProperties(PipelineStage):
     spatially-varying survey conditions such as PSF size, depth, or sky
     background. A non-zero trend indicates a potential systematic bias.
 
-    Survey properties are read from aux_source_maps and aux_lens_maps.
-    An optional directory of external .hs healsparse files can also be
-    provided via the external_maps_dir config option.
+    Survey properties come from two kinds of source, and both are optional, so
+    the stage runs whatever subset of them a pipeline actually provides:
 
-    The aux_source_maps and aux_lens_maps inputs are optional: alias either (or
-    both) to "none" in the pipeline to skip it. This lets the test run on the
-    external_maps_dir maps alone, without having built the aux maps earlier.
+    - The psf_maps and depth_map inputs, from TXPSFMaps and TXDepthMaps.
+    - A directory of .hs healsparse files. This is the survey_property_maps
+      FileCollection written by TXIngestDataPreview1 when that input is wired
+      up, and otherwise the directory named by the external_maps_dir config
+      option. Use external_maps_dir for SUPREME-style maps or for any survey
+      whose maps did not come from DP1 ingestion.
+
+    Every map input is optional: alias any of survey_property_maps, psf_maps or
+    depth_map to "none" in the pipeline to skip it. So the test can run on
+    ingested DP1 maps without having built the aux maps first, or on the aux
+    maps alone without having run DP1 ingestion.
+
+    The bands config option filters the .hs files down to chosen bands, since
+    DP1 ingestion writes every property in all six of ugrizy. Files with no
+    recognised band suffix are always kept.
 
     For each property the bin edges are chosen from the values it takes at the
     galaxies that enter the measurement -- galaxies in a source bin, on pixels
@@ -326,8 +407,9 @@ class TXMeanShearSurveyProperties(PipelineStage):
     inputs = [
         ("shear_catalog", ShearCatalog),
         ("shear_tomography_catalog", TomographyCatalog),
-        ("aux_source_maps", MapsFile),
-        ("aux_lens_maps", MapsFile),
+        ("survey_property_maps", FileCollection),
+        ("psf_maps", MapsFile),
+        ("depth_map", MapsFile),
     ]
 
     outputs = [
@@ -349,7 +431,14 @@ class TXMeanShearSurveyProperties(PipelineStage):
         ),
         "external_maps_dir": StageParameter(
             str, "",
-            msg="Optional directory containing .hs healsparse files to also test"
+            msg="Directory (or filename prefix) of .hs healsparse files to test. "
+                "Only used when the survey_property_maps input is not supplied."
+        ),
+        "bands": StageParameter(
+            list, ["i"],
+            msg="Bands to keep when loading .hs files, matched against the "
+                "trailing _<band> in the filename. Empty list means all bands. "
+                "Files with no band suffix are always kept."
         ),
         "map_plot_nside": StageParameter(
             int, 256,
@@ -407,7 +496,8 @@ class TXMeanShearSurveyProperties(PipelineStage):
         else:
             tomo_cols = ["bin"]
 
-        # Load all maps from the two aux map files, then optional external files.
+        # Load the aux map files, then a directory of .hs files. Every source is
+        # optional, so a pipeline supplies whichever it has.
         all_maps = {}  # name -> (hsp_map, nside)
 
         def _register_map(name, hsp_map, nside):
@@ -415,9 +505,9 @@ class TXMeanShearSurveyProperties(PipelineStage):
                 return
             all_maps[name] = (hsp_map, nside)
 
-        # Both aux map inputs are optional: aliased to "none" they are skipped,
-        # letting the test run on external_maps_dir alone.
-        for tag in ("aux_source_maps", "aux_lens_maps"):
+        # Aliased to "none" these are skipped, letting the test run without the
+        # aux map stages having been run first.
+        for tag in ("psf_maps", "depth_map"):
             if self.get_input(tag) == "none":
                 continue
             with self.open_input(tag, wrapper=True) as f:
@@ -426,14 +516,38 @@ class TXMeanShearSurveyProperties(PipelineStage):
                     nside = f.read_map_info(name)["nside"]
                     _register_map(name, hsp_map, nside)
 
-        if self.config["external_maps_dir"]:
+        # The ingested survey_property_maps collection takes precedence over the
+        # hand-written config path. If the input is wired up but holds no maps we
+        # still fall back, rather than silently testing nothing.
+        map_dir = ""
+        if self.get_input("survey_property_maps") != "none":
+            map_dir = self.get_input("survey_property_maps")
+            if not _hs_files(map_dir):
+                if self.rank == 0:
+                    print(
+                        "TXMeanShearSurveyProperties: no .hs files in the "
+                        f"survey_property_maps input at {map_dir}."
+                    )
+                map_dir = self.config["external_maps_dir"]
+        else:
+            map_dir = self.config["external_maps_dir"]
+
+        paths = _hs_files(map_dir)
+        if paths:
             import healsparse
-            root = self.config["external_maps_dir"]
-            for path in sorted(glob.glob(f"{root}/*.hs")):
-                name = pathlib.Path(path).stem
+            bands = self.config["bands"]
+            # A file with no band suffix is kept whatever bands is set to, so
+            # this cannot silently drop maps that are not named the DP1 way.
+            paths = [
+                p for p in paths
+                if not bands or _band_of(pathlib.Path(p).stem) in (None, *bands)
+            ]
+            names = _hs_map_names(paths)
+            if self.rank == 0:
+                print(f"TXMeanShearSurveyProperties: {len(paths)} .hs maps from {map_dir}")
+            for path in paths:
                 hsp_map = healsparse.HealSparseMap.read(path)
-                nside = hsp_map.nside_sparse
-                _register_map(name, hsp_map, nside)
+                _register_map(names[path], hsp_map, hsp_map.nside_sparse)
 
         if not all_maps:
             if self.rank == 0:

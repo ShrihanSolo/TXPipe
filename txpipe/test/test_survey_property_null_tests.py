@@ -7,6 +7,9 @@ from ..survey_property_null_tests import (
     _property_values_at,
     _assign_property_column,
     _marker_offset,
+    _band_of,
+    _shorten_map_name,
+    _hs_map_names,
     META_VARIANTS,
 )
 
@@ -285,3 +288,94 @@ def test_marker_offset_integer_valued_bins():
     mu = np.array([0.0, 1.0, 2.0])
     assert np.isclose(_marker_offset(mu), 0.1)
     _assert_no_crossing(mu)
+
+
+# Map naming
+#
+# DP1 ingestion writes deepCoadd_<property>_consolidated_map_<reduction>_<band>.hs
+# for every property in all six bands; these names become plot titles and HDF5
+# group names, so the stage trims them down.
+
+
+def test_shorten_drops_the_constant_dp1_parts():
+    assert (
+        _shorten_map_name("deepCoadd_psf_size_consolidated_map_weighted_mean_i")
+        == "psf_size_i"
+    )
+    assert (
+        _shorten_map_name("deepCoadd_sky_background_consolidated_map_weighted_mean_r")
+        == "sky_background_r"
+    )
+
+
+def test_shorten_keeps_the_discriminating_reduction():
+    """The three epoch maps differ only in their reduction, so it must survive."""
+    names = {
+        _shorten_map_name(f"deepCoadd_epoch_consolidated_map_{r}_i")
+        for r in ("min", "max", "mean")
+    }
+    assert names == {"epoch_min_i", "epoch_max_i", "epoch_mean_i"}
+    assert (
+        _shorten_map_name("deepCoadd_exposure_time_consolidated_map_sum_i")
+        == "exposure_time_sum_i"
+    )
+
+
+def test_shorten_leaves_non_dp1_names_alone():
+    """SUPREME maps come in through external_maps_dir and keep their names."""
+    for name in ("supreme_dc2_dr6d_v2_airmass_i", "depth", "psf_size"):
+        assert _shorten_map_name(name) == name
+
+
+def test_hs_map_names_falls_back_to_stems_on_collision():
+    """A shortened name that clashes would otherwise drop a map silently."""
+    paths = [
+        "/d/deepCoadd_x_consolidated_map_weighted_mean_i.hs",  # -> x_i
+        "/d/x_i.hs",  # already x_i
+    ]
+    names = _hs_map_names(paths)
+    assert set(names.values()) == {
+        "deepCoadd_x_consolidated_map_weighted_mean_i",
+        "x_i",
+    }
+
+
+def test_hs_map_names_unique_across_the_dp1_set():
+    dp1 = [
+        "deepCoadd_exposure_time_consolidated_map_sum",
+        "deepCoadd_epoch_consolidated_map_min",
+        "deepCoadd_epoch_consolidated_map_max",
+        "deepCoadd_epoch_consolidated_map_mean",
+        "deepCoadd_psf_size_consolidated_map_weighted_mean",
+        "deepCoadd_psf_e1_consolidated_map_weighted_mean",
+        "deepCoadd_psf_e2_consolidated_map_weighted_mean",
+        "deepCoadd_psf_maglim_consolidated_map_weighted_mean",
+        "deepCoadd_sky_background_consolidated_map_weighted_mean",
+        "deepCoadd_sky_noise_consolidated_map_weighted_mean",
+        "deepCoadd_dcr_dra_consolidated_map_weighted_mean",
+        "deepCoadd_dcr_ddec_consolidated_map_weighted_mean",
+        "deepCoadd_dcr_e1_consolidated_map_weighted_mean",
+        "deepCoadd_dcr_e2_consolidated_map_weighted_mean",
+    ]
+    paths = [f"/d/{m}_{b}.hs" for m in dp1 for b in "ugrizy"]
+    names = _hs_map_names(paths)
+    # No collisions, so nothing fell back to a full stem.
+    assert len(set(names.values())) == len(paths)
+    assert names[f"/d/{dp1[4]}_i.hs"] == "psf_size_i"
+
+
+def test_band_of():
+    for b in "ugrizy":
+        assert _band_of(f"deepCoadd_psf_size_consolidated_map_weighted_mean_{b}") == b
+    # Not a band: no suffix, a multi-letter tail, or a letter outside ugrizy.
+    assert _band_of("depth") is None
+    assert _band_of("deepCoadd_epoch_consolidated_map_mean") is None
+    assert _band_of("some_map_x") is None
+
+
+def test_band_filter_keeps_maps_with_no_band_suffix():
+    """The bands cut must not silently discard non-DP1 maps."""
+    bands = ["i"]
+    stems = ["psf_size_i", "psf_size_r", "supreme_airmass"]
+    kept = [s for s in stems if _band_of(s) in (None, *bands)]
+    assert kept == ["psf_size_i", "supreme_airmass"]
