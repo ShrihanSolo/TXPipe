@@ -1,0 +1,59 @@
+# TXMeanShearSurveyProperties on the outputs of a DP2 tutorial run.
+#
+# Run the tutorial pipeline first (examples/dp2/analysis_rubin_metadetect.yml
+# or analysis_desc_metadetect_1.1.yml). Then, from the TXPipe repo root:
+#
+#   ceci -t catalog=rubin dp2_run/pipeline_sp_dp2.yml    # Rubin metadetect
+#   ceci -t catalog=desc  dp2_run/pipeline_sp_dp2.yml    # DESC metadetect v1.1
+#
+# Add --dry-run first to see the command without running it.
+
+{% if catalog == "rubin" %}
+  {% set pipe_name = "rubin_metadetect" %}
+{% else %}
+  {% set pipe_name = "desc_metadetect_1.1" %}
+{% endif %}
+
+stages:
+  - name: TXMeanShearSurveyProperties
+    nprocess: 16
+
+modules: >
+    txpipe
+
+python_paths: []
+
+# Our outputs go in their own directory, so the tutorial outputs are untouched.
+output_dir: data/survey_property_{{ pipe_name }}
+
+launcher:
+    name: mini
+    interval: 1.0
+
+site:
+    name: nersc-interactive
+
+config: dp2_run/config_sp_dp2.yml
+
+inputs:
+{% if catalog == "rubin" %}
+    # The Rubin pipeline cuts the registry catalog first (TXCutShearCatalog)
+    # and writes the cut catalog to its output directory.
+    shear_catalog: data/{{ pipe_name }}/shear_catalog.hdf5
+{% else %}
+    # The DESC pipeline uses the registry catalog directly.
+    shear_catalog:
+        id: 147
+{% endif %}
+    shear_tomography_catalog: data/{{ pipe_name }}/shear_tomography_catalog.hdf5
+    psf_maps: data/{{ pipe_name }}/psf_maps.hdf5
+    # DP2 ingestion does not make depth or survey property maps. To test .hs
+    # maps, set external_maps_dir in the config instead.
+    depth_map: none
+    survey_property_maps: none
+
+resume: false
+log_dir: data/survey_property_{{ pipe_name }}/logs
+pipeline_log: data/survey_property_{{ pipe_name }}/log.txt
+
+registry: {}

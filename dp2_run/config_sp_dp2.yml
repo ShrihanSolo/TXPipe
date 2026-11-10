@@ -1,0 +1,18 @@
+global:
+    chunk_rows: 100000
+    pixelization: healpix
+    sparse: true
+
+TXMeanShearSurveyProperties:
+    nbins: 20
+    min_count: 50
+    outlier_fraction: 0.05
+    delta_gamma: 0.02      # same as the calibration stage in both DP2 configs
+    # Empty list: test every map in psf_maps. To pick some, list their names,
+    # e.g. ["psf/g1_2D", "psf/T_2D"].
+    properties: []
+    # Directory of DP2 .hs survey property maps, if any exist; "" for none.
+    external_maps_dir: ""
+    bands: [i]
+    map_plot_nside: 256
+    projection: McBryde
