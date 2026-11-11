@@ -11,8 +11,10 @@ TXMeanShearSurveyProperties:
     # Empty list: test every map in psf_maps. To pick some, list their names,
     # e.g. ["psf/g1_2D", "psf/T_2D"].
     properties: []
-    # Directory of DP2 .hs survey property maps, if any exist; "" for none.
-    external_maps_dir: ""
+    # DP2 survey property maps (nside 4096), made from the DP2 butler repo at
+    # NERSC by dp2_run/convert_dp2_sp_maps.py. If the directory does not exist
+    # yet, the stage just tests the PSF maps; "" also means no .hs maps.
+    external_maps_dir: /pscratch/sd/s/shrihan/dp2_survey_property_maps
     bands: [i]
     map_plot_nside: 256
     projection: McBryde
