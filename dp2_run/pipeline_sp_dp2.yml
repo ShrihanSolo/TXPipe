@@ -1,15 +1,19 @@
 # TXMeanShearSurveyProperties on the outputs of a DP2 tutorial run.
 #
-# Run the tutorial pipeline first (examples/dp2/analysis_rubin_metadetect.yml
-# or analysis_desc_metadetect_1.1.yml). Then, from the TXPipe repo root:
+# Run the tutorial pipeline first (examples/dp2/analysis_rubin_metadetect.yml,
+# analysis_desc_metadetect_1.1.yml, or the 1 deg^2 analysis1.1-mini.yml).
+# Then, from the TXPipe repo root:
 #
 #   ceci -t catalog=rubin dp2_run/pipeline_sp_dp2.yml    # Rubin metadetect
 #   ceci -t catalog=desc  dp2_run/pipeline_sp_dp2.yml    # DESC metadetect v1.1
+#   ceci -t catalog=mini  dp2_run/pipeline_sp_dp2.yml    # DESC v1.1, 1 deg^2 mini
 #
 # Add --dry-run first to see the command without running it.
 
 {% if catalog == "rubin" %}
   {% set pipe_name = "rubin_metadetect" %}
+{% elif catalog == "mini" %}
+  {% set pipe_name = "metadetect_desc_dp2_mini" %}
 {% else %}
   {% set pipe_name = "desc_metadetect_1.1" %}
 {% endif %}
@@ -40,6 +44,9 @@ inputs:
     # The Rubin pipeline cuts the registry catalog first (TXCutShearCatalog)
     # and writes the cut catalog to its output directory.
     shear_catalog: data/{{ pipe_name }}/shear_catalog.hdf5
+{% elif catalog == "mini" %}
+    # The 1 deg^2 cut-out that analysis1.1-mini.yml reads.
+    shear_catalog: /global/cfs/cdirs/lsst/utilities/data-registry/lsst_desc_working/user/zuntz/.gen_paths/txpipe_dp2_shear_catalog_desc_metaDetect_1deg2_0.3.0/mini_desc_dp2_shear_catalog.hdf5
 {% else %}
     # The DESC pipeline uses the registry catalog directly.
     shear_catalog:
