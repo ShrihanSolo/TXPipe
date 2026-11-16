@@ -13,6 +13,7 @@ from ..survey_property_null_tests import (
     _band_of,
     _shorten_map_name,
     _hs_map_names,
+    _keep_psf_map,
     META_VARIANTS,
 )
 
@@ -612,3 +613,16 @@ def test_chi2_const_needs_two_bins():
         _, st = _null_test_statistics(mu, g, g, s, s, counts, 50)
     assert st["n_used_bins"] == 0
     assert np.isnan(st["chi2_const"]) and np.isnan(st["const_g1"])
+
+
+def test_keep_psf_map_default_keeps_only_2d():
+    names = ["psf/g1_0", "psf/g1_3", "psf/g1_2D", "psf/count_2D", "psf/var_e_1"]
+    kept = [n for n in names if _keep_psf_map(n, ["2D"])]
+    assert kept == ["psf/g1_2D", "psf/count_2D"]
+
+
+def test_keep_psf_map_empty_list_keeps_all_and_ints_match():
+    assert _keep_psf_map("psf/g1_0", [])
+    assert _keep_psf_map("psf/g1_0", [0])
+    assert not _keep_psf_map("psf/g1_10", [0])
+

@@ -81,6 +81,14 @@ def _hs_map_names(paths):
     }
 
 
+def _keep_psf_map(name, psf_map_bins):
+    """
+    Whether a psf_maps map is tested, from the bin after its last underscore
+    (psf/g1_2D -> 2D, psf/g1_0 -> 0). An empty psf_map_bins keeps every map.
+    """
+    return not psf_map_bins or name.rsplit("_", 1)[-1] in [str(b) for b in psf_map_bins]
+
+
 def _bin_edges_from_values(vals, nbins, outlier_fraction):
     """
     Compute bin edges for a survey property from the values it takes within the
@@ -562,6 +570,14 @@ class TXMeanShearSurveyProperties(PipelineStage):
             list, [],
             msg="Map names to test (e.g. ['psf/g1_2D', 'depth/depth']). Empty list means all available."
         ),
+        "psf_map_bins": StageParameter(
+            list, ["2D"],
+            msg="Tomographic bins of the psf_maps maps to test, matched against the "
+                "trailing _<bin> of the name (e.g. psf/g1_2D). The default keeps only "
+                "the non-tomographic maps: the PSF does not depend on the galaxy, so "
+                "the per-bin maps sample the same field at fewer points. Empty list "
+                "means all bins."
+        ),
         "external_maps_dir": StageParameter(
             str, "",
             msg="Directory (or filename prefix) of .hs healsparse files to test. "
@@ -660,6 +676,8 @@ class TXMeanShearSurveyProperties(PipelineStage):
                 continue
             with self.open_input(tag, wrapper=True) as f:
                 for name in f.list_maps():
+                    if tag == "psf_maps" and not _keep_psf_map(name, self.config["psf_map_bins"]):
+                        continue
                     register(name, f.read_map(name), f.read_map_info(name)["nside"])
 
         map_dir = self.survey_property_map_dir()

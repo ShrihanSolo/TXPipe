@@ -8,9 +8,12 @@ TXMeanShearSurveyProperties:
     min_count: 50
     outlier_fraction: 0.05
     delta_gamma: 0.02      # same as the calibration stage in both DP2 configs
-    # Empty list: test every map in psf_maps. To pick some, list their names,
-    # e.g. ["psf/g1_2D", "psf/T_2D"].
+    # Empty list: test every map. To pick some, list their names,
+    # e.g. ["psf/g1_2D", "psf/g2_2D"] (TXPSFMaps makes no PSF size map).
     properties: []
+    # Only the non-tomographic PSF maps: the per-bin ones sample the same PSF
+    # field at the positions of fewer galaxies. [] tests every bin.
+    psf_map_bins: ["2D"]
     # DP2 survey property maps (nside 4096), made from the DP2 butler repo at
     # NERSC by dp2_run/convert_dp2_sp_maps.py. If the directory does not exist
     # yet, the stage just tests the PSF maps; "" also means no .hs maps.
