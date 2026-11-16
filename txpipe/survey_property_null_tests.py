@@ -464,7 +464,7 @@ def _footprint_aspect(hsp_map):
 
 
 def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBryde",
-                       cbar_pad=0.16):
+                       cbar_location="bottom"):
     """
     Draw a survey property map into ``ax`` with skyproj, as the other TXPipe
     map plots do (see ``MapsFile.plot``). skyproj zooms to the map's footprint,
@@ -472,8 +472,8 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
 
     Maps finer than ``plot_nside`` are degraded first, which only smooths the
     displayed values. ``plot_nside=0`` keeps the native resolution.
-    ``cbar_pad`` is the gap above the colour bar as a fraction of the panel
-    height, so a short panel needs a larger value.
+    ``cbar_location`` is "bottom" (under a compact field) or "right" (beside a
+    wide stripe, which leaves no room below it).
     """
     import skyproj
 
@@ -498,9 +498,15 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
     sp.ax.tick_params(axis="y", labelsize=8)
     sp.ax.set_xlabel("RA", fontsize=10)
     sp.ax.set_ylabel("Dec", fontsize=10)
-    # A horizontal colour bar under the map: a vertical one as tall as the
-    # panel squeezes a small field, and the bar's label names the property.
-    sp.draw_colorbar(label=title, location="bottom", fraction=0.05, pad=cbar_pad, fontsize=8)
+    # Under a compact field the bar is horizontal: a vertical one as tall as
+    # the panel would squeeze the field. Beside a wide stripe it is vertical,
+    # since the stripe is short and the bar then costs only a little width.
+    if cbar_location == "right":
+        # No label: the panel title already names the property, and a label
+        # would need width the stripe can use.
+        sp.draw_colorbar(location="right", fraction=0.025, pad=0.015, fontsize=8)
+    else:
+        sp.draw_colorbar(label=title, location="bottom", fraction=0.05, pad=0.16, fontsize=8)
     sp.ax.set_title(title, fontsize=10)
 
 
@@ -905,10 +911,22 @@ class TXMeanShearSurveyProperties(PipelineStage):
             hsp_map = _restrict_to_footprint(hsp_map, *footprint)
         # A footprint much wider than it is tall (a long survey stripe) would be
         # a thin strip beside the trend panel, so it goes above it instead.
-        wide = _footprint_aspect(hsp_map) > 2.5
+        aspect = _footprint_aspect(hsp_map)
+        wide = aspect > 2.5
         if wide:
-            fig = plt.figure(figsize=(10.0, 7.0))
-            gs = fig.add_gridspec(2, 1, height_ratios=[0.8, 1.4], hspace=0.45)
+            # Size the map row from the footprint's shape so the map fills the
+            # full figure width; the trend panel keeps a fixed height. Lengths
+            # in inches: margins, the gap (trend title, RA labels) and rows.
+            width, map_w, trend_h = 10.0, 8.2, 3.6
+            top, gap, bottom = 0.4, 0.95, 0.9
+            map_h = float(np.clip(map_w / aspect, 1.0, 5.0))
+            height = top + map_h + gap + trend_h + bottom
+            fig = plt.figure(figsize=(width, height))
+            gs = fig.add_gridspec(
+                2, 1, height_ratios=[map_h, trend_h],
+                hspace=gap / ((map_h + trend_h) / 2), top=1 - top / height,
+                bottom=bottom / height, left=0.09, right=0.94,
+            )
         else:
             fig = plt.figure(figsize=(12.0, 4.8))
             # The map panel is a touch narrower: a sky patch keeps its aspect
@@ -919,7 +937,7 @@ class TXMeanShearSurveyProperties(PipelineStage):
             fig.add_subplot(gs[0]), hsp_map, map_nside, safe_name,
             plot_nside=self.config["map_plot_nside"],
             projection=self.config["projection"],
-            cbar_pad=0.26 if wide else 0.16,
+            cbar_location="right" if wide else "bottom",
         )
 
         ax = fig.add_subplot(gs[1])
@@ -979,9 +997,7 @@ class TXMeanShearSurveyProperties(PipelineStage):
                   ncol=3, frameon=False, columnspacing=1.0)
         # Explicit spacing rather than tight_layout, which does not see the
         # skyproj axes; the bottom margin leaves room for the legend.
-        if wide:
-            fig.subplots_adjust(left=0.09, right=0.97, top=0.95, bottom=0.13)
-        else:
+        if not wide:
             fig.subplots_adjust(left=0.05, right=0.98, top=0.86, bottom=0.2)
         fig.savefig(path)
         plt.close(fig)
