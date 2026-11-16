@@ -424,10 +424,23 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
         ax.axis("off")
         return
 
-    sp = getattr(skyproj, projection + "Skyproj")(ax=ax)
+    # skyproj draws on a new axes laid over ``ax``, so the title and labels go
+    # on ``sp.ax``; ``ax`` itself is only a placeholder and is hidden.
+    ax.axis("off")
+    # Fewer grid lines than skyproj's default, so the RA labels of a small
+    # field do not run into each other at this panel size.
+    sp = getattr(skyproj, projection + "Skyproj")(ax=ax, n_grid_lon=4, n_grid_lat=4)
     sp.draw_hspmap(hsp_map)
-    sp.draw_colorbar()
-    ax.set_title(title)
+    # RA labels only along the bottom, as in MapsFile.plot, and smaller labels
+    # than skyproj's default xx-large, which suits a full-page map.
+    sp.ax.tick_params(axis="x", labeltop=False, labelsize=8)
+    sp.ax.tick_params(axis="y", labelsize=8)
+    sp.ax.set_xlabel("RA", fontsize=10)
+    sp.ax.set_ylabel("Dec", fontsize=10)
+    # A horizontal colour bar under the map: a vertical one as tall as the
+    # panel squeezes a small field, and the bar's label names the property.
+    sp.draw_colorbar(label=title, location="bottom", fraction=0.05, pad=0.14, fontsize=8)
+    sp.ax.set_title(title, fontsize=10)
 
 
 class TXMeanShearSurveyProperties(PipelineStage):
@@ -800,10 +813,10 @@ class TXMeanShearSurveyProperties(PipelineStage):
         import matplotlib.pyplot as plt
 
         safe_name = name.replace("/", "_")
-        fig = plt.figure(figsize=(12.0, 4.5))
+        fig = plt.figure(figsize=(12.0, 4.8))
         # The map panel is a touch narrower: a sky patch keeps its aspect
         # ratio, so given equal widths it would sit small beside the trend.
-        gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.35])
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.25])
 
         hsp_map, map_nside = map_info
         _plot_property_map(
@@ -857,16 +870,17 @@ class TXMeanShearSurveyProperties(PipelineStage):
         # Two lines: against zero (offset and trend) and against a constant
         # (bin-to-bin variation only), so an offset can be told apart from a trend.
         ax.set_title(
-            f"{safe_name}\n"
             f"vs zero: $\\chi^2$/dof = {stats['chi2_null']:.1f}/{stats['n_dof_null']}, "
-            f"p = {stats['chi2_null_pvalue']:.2g}    "
+            f"p = {stats['chi2_null_pvalue']:.2g}\n"
             f"vs constant: $\\chi^2$/dof = {stats['chi2_const']:.1f}/{stats['n_dof_const']}, "
             f"p = {stats['chi2_const_pvalue']:.2g}",
             fontsize=10,
         )
-        ax.legend(fontsize=8)
-        # Explicit spacing rather than tight_layout: the map colorbar and the
-        # trend panel need a wide gap between them.
-        fig.subplots_adjust(left=0.06, right=0.96, bottom=0.15, wspace=0.32)
+        # The legend goes below the panel, where it cannot cover any points.
+        ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.14),
+                  ncol=3, frameon=False, columnspacing=1.0)
+        # Explicit spacing rather than tight_layout, which does not see the
+        # skyproj axes; the bottom margin leaves room for the legend.
+        fig.subplots_adjust(left=0.05, right=0.98, top=0.86, bottom=0.2, wspace=0.12)
         fig.savefig(path)
         plt.close(fig)
