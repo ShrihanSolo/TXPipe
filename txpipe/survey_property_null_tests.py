@@ -159,6 +159,12 @@ def _property_values_at(hsp_map, nside, ra, dec):
     """
     import healpy as hp
 
+    # Chunks can be empty: combined_iterators(longest=True) keeps going after
+    # the shorter input runs out. HealSparse returns an empty array of the map's
+    # own dtype for no pixels, ignoring valid_mask, so handle that case here.
+    if len(ra) == 0:
+        return np.empty(0, dtype=float)
+
     pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=True)
     # valid_mask=True flags observed pixels for any map dtype.
     valid = hsp_map.get_values_pix(pixels, valid_mask=True)
