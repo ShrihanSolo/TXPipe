@@ -129,6 +129,12 @@ SCENARIOS = {
         footprint_from_file(n), footprint_disc(n, 95.0, -25.0, 3.0),
         footprint_disc(n, 150.0, 2.0, 2.0), footprint_band(n, 20, 40, -45, -35)])),
         1024, {}, footprint_from_file),
+    # Like the DESC DP2 run: the shear footprint plus a field near RA 185 and
+    # stray patches, which together span ~250 deg of RA (stacked layout).
+    "dp2_plus_field": (lambda n: np.unique(np.concatenate([
+        footprint_from_file(n), footprint_disc(n, 187.0, -14.0, 4.0),
+        footprint_disc(n, 70.0, -47.0, 1.0), footprint_disc(n, 266.0, -42.0, 0.7)])),
+        1024, {}),
     "several_fields": (lambda n: np.concatenate([
         footprint_disc(n, 53.1, -28.1, 1.2), footprint_disc(n, 59.1, -48.7, 1.2),
         footprint_disc(n, 6.0, -72.1, 1.0), footprint_disc(n, 95.0, -25.0, 1.0)]), 2048, {}),
@@ -145,6 +151,7 @@ def main():
     names = sys.argv[2:] or list(SCENARIOS)
     outdir.mkdir(parents=True, exist_ok=True)
     mod = load_stage_module()
+    FakeStage._property_figure = mod.TXMeanShearSurveyProperties._property_figure
     import matplotlib
     matplotlib.use("agg")
 

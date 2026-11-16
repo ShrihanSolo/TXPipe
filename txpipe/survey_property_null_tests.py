@@ -463,8 +463,38 @@ def _footprint_aspect(hsp_map):
     return width / height
 
 
-def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBryde",
-                       cbar_location="bottom"):
+# Matplotlib settings for the figures, close to a journal style: serif text
+# with matching maths, inward ticks on every side, thin lines. Applied with
+# rc_context, so other TXPipe plots are not affected.
+PAPER_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["STIXGeneral", "DejaVu Serif"],
+    "mathtext.fontset": "stix",
+    "font.size": 10,
+    "axes.titlesize": 10,
+    "axes.labelsize": 11,
+    "axes.linewidth": 0.8,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "xtick.direction": "in",
+    "ytick.direction": "in",
+    "xtick.top": True,
+    "ytick.right": True,
+    "xtick.minor.visible": True,
+    "ytick.minor.visible": True,
+    "xtick.major.size": 4,
+    "ytick.major.size": 4,
+    "xtick.minor.size": 2,
+    "ytick.minor.size": 2,
+    "legend.fontsize": 9,
+    "savefig.dpi": 150,
+}
+
+# Colour-blind safe (Okabe-Ito) colours for the g1 and g2 series.
+G1_COLOR, G2_COLOR = "#0072B2", "#D55E00"
+
+
+def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBryde"):
     """
     Draw a survey property map into ``ax`` with skyproj, as the other TXPipe
     map plots do (see ``MapsFile.plot``). skyproj zooms to the map's footprint,
@@ -472,8 +502,9 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
 
     Maps finer than ``plot_nside`` are degraded first, which only smooths the
     displayed values. ``plot_nside=0`` keeps the native resolution.
-    ``cbar_location`` is "bottom" (under a compact field) or "right" (beside a
-    wide stripe, which leaves no room below it).
+
+    Returns the skyproj object, or None for an empty map. The colour bar is
+    left to the caller, which draws it once the panel has its final size.
     """
     import skyproj
 
@@ -483,7 +514,7 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
     if hsp_map.n_valid == 0:
         ax.set_title(f"{title}\n(no observed pixels)")
         ax.axis("off")
-        return
+        return None
 
     # skyproj draws on a new axes laid over ``ax``, so the title and labels go
     # on ``sp.ax``; ``ax`` itself is only a placeholder and is hidden.
@@ -494,20 +525,33 @@ def _plot_property_map(ax, hsp_map, nside, title, plot_nside=0, projection="McBr
     sp.draw_hspmap(hsp_map)
     # RA labels only along the bottom, as in MapsFile.plot, and smaller labels
     # than skyproj's default xx-large, which suits a full-page map.
-    sp.ax.tick_params(axis="x", labeltop=False, labelsize=8)
-    sp.ax.tick_params(axis="y", labelsize=8)
-    sp.ax.set_xlabel("RA", fontsize=10)
-    sp.ax.set_ylabel("Dec", fontsize=10)
-    # Under a compact field the bar is horizontal: a vertical one as tall as
-    # the panel would squeeze the field. Beside a wide stripe it is vertical,
-    # since the stripe is short and the bar then costs only a little width.
-    if cbar_location == "right":
-        # No label: the panel title already names the property, and a label
-        # would need width the stripe can use.
-        sp.draw_colorbar(location="right", fraction=0.025, pad=0.015, fontsize=8)
-    else:
-        sp.draw_colorbar(label=title, location="bottom", fraction=0.05, pad=0.16, fontsize=8)
-    sp.ax.set_title(title, fontsize=10)
+    sp.ax.tick_params(axis="x", labeltop=False, labelsize=9)
+    sp.ax.tick_params(axis="y", labelsize=9)
+    sp.ax.set_xlabel("RA", fontsize=11)
+    sp.ax.set_ylabel("Dec", fontsize=11)
+    sp.ax.set_title(title, fontsize=11)
+    return sp
+
+
+def _projected_aspect(sp):
+    """Width over height of the drawn map in projected coordinates."""
+    x0, x1, y0, y1 = sp.ax.get_extent(lonlat=False)
+    return abs(x1 - x0) / max(abs(y1 - y0), 1e-12)
+
+
+def _center_axes_group(fig, axes, x_center):
+    """
+    Move ``axes`` together sideways so that their combined drawn box is
+    centred on ``x_center`` (figure fraction). Positions are read after a draw,
+    so equal-aspect axes report the box they actually occupy.
+    """
+    fig.canvas.draw()
+    boxes = [a.get_position() for a in axes]
+    left = min(b.x0 for b in boxes)
+    right = max(b.x1 for b in boxes)
+    shift = x_center - 0.5 * (left + right)
+    for a, b in zip(axes, boxes):
+        a.set_position([b.x0 + shift, b.y0, b.width, b.height])
 
 
 class TXMeanShearSurveyProperties(PipelineStage):
@@ -904,68 +948,107 @@ class TXMeanShearSurveyProperties(PipelineStage):
         """
         import matplotlib.pyplot as plt
 
+        with plt.rc_context(PAPER_STYLE):
+            fig = self._property_figure(name, map_info, mu, g1, g2, sigma1, sigma2,
+                                        usable, stats)
+            fig.savefig(path)
+        plt.close(fig)
+
+    def _property_figure(self, name, map_info, mu, g1, g2, sigma1, sigma2, usable, stats):
+        import matplotlib.pyplot as plt
+
         safe_name = name.replace("/", "_")
         hsp_map, map_nside = map_info
         footprint = getattr(self, "galaxy_footprint", None)
         if footprint is not None:
             hsp_map = _restrict_to_footprint(hsp_map, *footprint)
-        # A footprint much wider than it is tall (a long survey stripe) would be
-        # a thin strip beside the trend panel, so it goes above it instead.
-        aspect = _footprint_aspect(hsp_map)
-        wide = aspect > 2.5
+        # A footprint much wider than it is tall (a long survey stripe, or
+        # fields far apart in RA) would be a thin strip beside the trend panel,
+        # so it goes above it instead.
+        wide = _footprint_aspect(hsp_map) > 2.5
+        # Lengths in inches.
+        width = 10.0 if wide else 12.0
+        left, right = 0.85, 0.35
         if wide:
-            # Size the map row from the footprint's shape so the map fills the
-            # full figure width; the trend panel keeps a fixed height. Lengths
-            # in inches: margins, the gap (trend title, RA labels) and rows.
-            width, map_w, trend_h = 10.0, 8.2, 3.6
-            top, gap, bottom = 0.4, 0.95, 0.9
-            map_h = float(np.clip(map_w / aspect, 1.0, 5.0))
+            # The map row is sized below, once the map's projected shape is
+            # known; the trend panel keeps a fixed height.
+            top, gap, bottom, trend_h, map_h = 0.4, 0.95, 0.9, 3.6, 2.0
             height = top + map_h + gap + trend_h + bottom
             fig = plt.figure(figsize=(width, height))
-            gs = fig.add_gridspec(
-                2, 1, height_ratios=[map_h, trend_h],
-                hspace=gap / ((map_h + trend_h) / 2), top=1 - top / height,
-                bottom=bottom / height, left=0.09, right=0.94,
-            )
+            gs = fig.add_gridspec(2, 1, height_ratios=[map_h, trend_h])
         else:
-            fig = plt.figure(figsize=(12.0, 4.8))
+            height = 4.8
+            fig = plt.figure(figsize=(width, height))
             # The map panel is a touch narrower: a sky patch keeps its aspect
             # ratio, so given equal widths it would sit small beside the trend.
-            gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.25], wspace=0.2)
+            gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.25], wspace=0.2,
+                                  left=0.05, right=0.97, top=0.86, bottom=0.2)
 
-        _plot_property_map(
-            fig.add_subplot(gs[0]), hsp_map, map_nside, safe_name,
+        map_ax = fig.add_subplot(gs[0])
+        sp = _plot_property_map(
+            map_ax, hsp_map, map_nside, safe_name,
             plot_nside=self.config["map_plot_nside"],
             projection=self.config["projection"],
-            cbar_location="right" if wide else "bottom",
         )
-
+        cbar_w = 0.45  # colour bar and its tick labels, beside a wide map
+        if wide:
+            # Make the map row exactly as tall as the map is at full width.
+            map_w = width - left - right - cbar_w
+            if sp is not None:
+                map_h = float(np.clip(map_w / _projected_aspect(sp), 1.0, 5.0))
+            height = top + map_h + gap + trend_h + bottom
+            fig.set_size_inches(width, height)
+            gs.set_height_ratios([map_h, trend_h])
+            gs.update(left=left / width, right=1 - right / width,
+                      top=1 - top / height, bottom=bottom / height,
+                      hspace=gap / ((map_h + trend_h) / 2))
         ax = fig.add_subplot(gs[1])
+
+        if sp is not None:
+            # skyproj placed its axes over the placeholder when it was created,
+            # so it is moved to the placeholder's final position.
+            box = map_ax.get_position()
+            if wide:
+                box.x1 -= cbar_w / width
+            sp.ax.set_position(box)
+            # Beside a wide map the bar is vertical and unlabelled (the panel
+            # title names the property); under a compact field it is
+            # horizontal, since a vertical one would squeeze the field.
+            if wide:
+                cbar = sp.draw_colorbar(location="right", fraction=0.025, pad=0.015,
+                                        fontsize=9)
+            else:
+                cbar = sp.draw_colorbar(label=safe_name, location="bottom",
+                                        fraction=0.05, pad=0.16, fontsize=9)
+            cbar.outline.set_linewidth(0.6)
+            # Centre the map and its bar: over the trend panel when stacked,
+            # in their own cell otherwise.
+            cell = map_ax.get_position()
+            centre = ax.get_position() if wide else cell
+            _center_axes_group(fig, [sp.ax, cbar.ax], 0.5 * (centre.x0 + centre.x1))
+
         finite = np.isfinite(mu) & np.isfinite(g1) & np.isfinite(g2)
         # Small horizontal offset so the g1/g2 series don't overlap, taken over
         # the finite bins only. g1 sits to the right of each bin and g2 to the
         # left, matching TXSourceDiagnosticPlots.
         dx = _marker_offset(mu[finite])
-        ax.axhline(0, color="k", lw=0.8, ls="--")
+        ax.axhline(0, color="0.3", lw=0.7, ls="--", zorder=0)
 
         for comp, g, s, sign, marker, color in (
-            ("g1", g1, sigma1, +1, "s", "tab:blue"),
-            ("g2", g2, sigma2, -1, "o", "tab:orange"),
+            ("g1", g1, sigma1, +1, "s", G1_COLOR),
+            ("g2", g2, sigma2, -1, "o", G2_COLOR),
         ):
             x = mu + sign * dx
             used = usable
             excluded = finite & ~usable
-            # Error bars are drawn in black on top of the markers, so that a bin
-            # with a tiny error still shows a short line through its marker.
-            ax.errorbar(x[used], g[used], s[used], fmt="none", ecolor="k",
-                        elinewidth=0.8, zorder=3)
             slope, slope_err = stats[f"slope_{comp}"], stats[f"slope_{comp}_err"]
             label = (
-                f"{comp}  (m={slope:.2e} $\\pm$ {slope_err:.2e})"
-                if np.isfinite(slope) else f"{comp}  (too few bins to fit)"
+                f"$g_{comp[1]}$  ($m$ = {slope:.2e} $\\pm$ {slope_err:.2e})"
+                if np.isfinite(slope) else f"$g_{comp[1]}$  (too few bins to fit)"
             )
-            ax.plot(x[used], g[used], marker, markersize=4, color=color,
-                    linestyle="none", zorder=2, label=label)
+            ax.errorbar(x[used], g[used], s[used], fmt=marker, markersize=4,
+                        color=color, mec=color, elinewidth=0.8, capsize=0,
+                        zorder=2, label=label)
             if excluded.any():
                 ax.errorbar(x[excluded], g[excluded], s[excluded], fmt=marker,
                             markersize=4, mfc="none", color="0.6", elinewidth=0.6,
@@ -974,11 +1057,13 @@ class TXMeanShearSurveyProperties(PipelineStage):
             if np.isfinite(slope):
                 x_line = np.array([mu[used].min(), mu[used].max()])
                 ax.plot(x_line, slope * x_line + stats[f"intercept_{comp}"],
-                        color=color, lw=1)
+                        color=color, lw=1.1, zorder=3)
 
         if (finite & ~usable).any():
-            ax.plot([], [], "o", mfc="none", color="0.6", linestyle="none",
-                    label=f"< {stats['min_count']} galaxies (not used)")
+            # An errorbar entry like the g1/g2 ones, so the legend keeps this
+            # order (it lists plain lines before errorbar entries).
+            ax.errorbar([], [], [], fmt="o", markersize=4, mfc="none", color="0.6",
+                        elinewidth=0.6, label=f"< {stats['min_count']} galaxies (not used)")
 
         ax.set_xlabel(safe_name)
         ax.set_ylabel("Mean shear")
@@ -986,18 +1071,12 @@ class TXMeanShearSurveyProperties(PipelineStage):
         # (bin-to-bin variation only), so an offset can be told apart from a trend.
         ax.set_title(
             f"vs zero: $\\chi^2$/dof = {stats['chi2_null']:.1f}/{stats['n_dof_null']}, "
-            f"p = {stats['chi2_null_pvalue']:.2g}\n"
+            f"$p$ = {stats['chi2_null_pvalue']:.2g}\n"
             f"vs constant: $\\chi^2$/dof = {stats['chi2_const']:.1f}/{stats['n_dof_const']}, "
-            f"p = {stats['chi2_const_pvalue']:.2g}",
-            fontsize=10,
+            f"$p$ = {stats['chi2_const_pvalue']:.2g}",
         )
         # The legend goes below the panel, where it cannot cover any points.
-        ax.legend(fontsize=8, loc="upper center",
-                  bbox_to_anchor=(0.5, -0.13 if wide else -0.14),
-                  ncol=3, frameon=False, columnspacing=1.0)
-        # Explicit spacing rather than tight_layout, which does not see the
-        # skyproj axes; the bottom margin leaves room for the legend.
-        if not wide:
-            fig.subplots_adjust(left=0.05, right=0.98, top=0.86, bottom=0.2)
-        fig.savefig(path)
-        plt.close(fig)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13 if wide else -0.14),
+                  ncol=3, frameon=False, columnspacing=1.0, handletextpad=0.3)
+        return fig
+
