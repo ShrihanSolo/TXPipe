@@ -249,6 +249,66 @@ def _weighted_line_fit(x, y, sigma):
     return slope, np.sqrt(S / det), intercept, np.sqrt(Sxx / det)
 
 
+def _min_count_cut_report(name, edges, counts, min_count):
+    """
+    A message listing the bins of one map left out of the statistics for having
+    fewer than ``min_count`` galaxies, with each bin's property range and count,
+    or None if no bin is cut.
+
+    These are usually the bins at the ends of the property range, where a
+    systematic is most likely to show, so the cut should be visible in the log
+    rather than only as grey markers in the plot.
+    """
+    cut = np.flatnonzero(np.asarray(counts) < min_count)
+    if cut.size == 0:
+        return None
+    parts = [
+        f"bin {i} ({edges[i]:.4g} to {edges[i + 1]:.4g}): {int(counts[i])} galaxies"
+        for i in cut
+    ]
+    return (
+        f"TXMeanShearSurveyProperties: '{name}': {cut.size} of {len(counts)} bins "
+        f"have fewer than {min_count} galaxies and are left out of the chi-squared "
+        "and the fits: " + "; ".join(parts)
+    )
+
+
+def _bad_bin_report(name, edges, mu, g1, g2, sigma1, sigma2, counts, min_count):
+    """
+    A warning listing bins that have at least ``min_count`` galaxies but still
+    cannot be used, because a mean or error is not finite or an error is zero,
+    or None if there are none.
+
+    Small bins fail these checks for expected reasons (no galaxies, a sheared
+    variant with no galaxies, a single galaxy), and the count cut already
+    removes them. A well-populated bin failing them points to a problem in the
+    inputs instead: e.g. a NaN or inf shear or weight in the catalog, which
+    turns the whole bin's sums into NaN, all-zero weights, or duplicated rows
+    or noiseless shears giving zero spread. Such a bin is otherwise dropped
+    silently, since non-finite bins are not drawn in the plot either.
+    """
+    finite = (
+        np.isfinite(mu) & np.isfinite(g1) & np.isfinite(g2)
+        & np.isfinite(sigma1) & np.isfinite(sigma2)
+    )
+    with np.errstate(invalid="ignore"):
+        positive = (sigma1 > 0) & (sigma2 > 0)
+    bad = np.flatnonzero((np.asarray(counts) >= min_count) & ~(finite & positive))
+    if bad.size == 0:
+        return None
+    parts = [
+        f"bin {i} ({edges[i]:.4g} to {edges[i + 1]:.4g}): {int(counts[i])} galaxies, "
+        f"g1={g1[i]:.3g}, g2={g2[i]:.3g}, sigma_g1={sigma1[i]:.3g}, sigma_g2={sigma2[i]:.3g}"
+        for i in bad
+    ]
+    return (
+        f"TXMeanShearSurveyProperties: WARNING - '{name}': {bad.size} bin(s) with at "
+        f"least {min_count} galaxies have a non-finite mean or error, or a zero "
+        "error, and are left out; check the catalog for NaN/inf shears or weights: "
+        + "; ".join(parts)
+    )
+
+
 def _null_test_statistics(mu, g1, g2, sigma1, sigma2, counts, min_count):
     """
     Summary statistics of the binned mean shear for one survey property.
@@ -260,16 +320,23 @@ def _null_test_statistics(mu, g1, g2, sigma1, sigma2, counts, min_count):
     measured and can come out far too small, giving that bin a huge weight in
     both statistics below.
 
-    Two statistics are returned:
+    Three statistics are returned:
 
     - chi2_null: the chi-squared of the mean g1 and g2 against zero shear, the
       null hypothesis, over the used bins. No parameters are fitted, so the
       number of degrees of freedom is the number of values summed (two per
-      bin).
+      bin). A constant shear offset over the whole sample raises it as much as
+      a trend with the property does.
+    - chi2_const: the chi-squared of the mean g1 and g2 against a constant, the
+      weighted mean of the used bins for each component (saved as const_g1,
+      const_g2). The offset is fitted out, so this tests only whether the
+      shear varies from bin to bin. One constant is fitted per component, so
+      the degrees of freedom are two per bin minus two. It needs at least two
+      used bins.
     - straight-line fits of g1 and g2 against the mean property value, whose
       slopes measure a trend with the property.
 
-    Both treat the bins as independent with shape-noise errors only; spatially
+    All treat the bins as independent with shape-noise errors only; spatially
     correlated errors between bins are not included.
     """
     from scipy.stats import chi2 as chi2_dist
@@ -292,6 +359,21 @@ def _null_test_statistics(mu, g1, g2, sigma1, sigma2, counts, min_count):
         "n_used_bins": n,
         "min_count": min_count,
     }
+
+    # Against a constant: subtract each component's weighted mean over the used
+    # bins, the best-fitting constant for these errors.
+    chi2_c = 0.0
+    for comp, g, s in (("g1", g1, sigma1), ("g2", g2, sigma2)):
+        w = 1.0 / s[usable] ** 2
+        const = float(np.sum(w * g[usable]) / np.sum(w)) if n else np.nan
+        stats[f"const_{comp}"] = const
+        stats[f"const_{comp}_err"] = float(1.0 / np.sqrt(np.sum(w))) if n else np.nan
+        chi2_c += float(np.sum(w * (g[usable] - const) ** 2)) if n else 0.0
+    n_dof_c = 2 * n - 2 if n >= 2 else 0
+    stats["chi2_const"] = chi2_c if n_dof_c else np.nan
+    stats["n_dof_const"] = n_dof_c
+    stats["chi2_const_per_dof"] = chi2_c / n_dof_c if n_dof_c else np.nan
+    stats["chi2_const_pvalue"] = float(chi2_dist.sf(chi2_c, n_dof_c)) if n_dof_c else np.nan
     for comp, g, s in (("g1", g1, sigma1), ("g2", g2, sigma2)):
         slope, slope_err, intercept, intercept_err = _weighted_line_fit(
             mu[usable], g[usable], s[usable]
@@ -444,7 +526,7 @@ class TXMeanShearSurveyProperties(PipelineStage):
         all_maps = self.load_maps()
         bin_edges, counts = self.choose_bin_edges(all_maps, cols)
         binned_shears = self.measure_mean_shear(all_maps, bin_edges, cols)
-        self.write_results(all_maps, binned_shears, counts)
+        self.write_results(all_maps, binned_shears, bin_edges, counts)
 
     def catalog_columns(self):
         """
@@ -647,7 +729,7 @@ class TXMeanShearSurveyProperties(PipelineStage):
                 binned_shears[name].add_data(data)
         return binned_shears
 
-    def write_results(self, all_maps, binned_shears, counts):
+    def write_results(self, all_maps, binned_shears, bin_edges, counts):
         """
         Collect each map's binned mean shear, then on rank 0 write it with its
         statistics to the HDF5 output and make its plot.
@@ -671,6 +753,14 @@ class TXMeanShearSurveyProperties(PipelineStage):
             usable, stats = _null_test_statistics(
                 mu, g1, g2, sigma1, sigma2, counts[name], min_count
             )
+            cut_report = _min_count_cut_report(name, bin_edges[name], counts[name], min_count)
+            if cut_report:
+                print(cut_report)
+            bad_report = _bad_bin_report(
+                name, bin_edges[name], mu, g1, g2, sigma1, sigma2, counts[name], min_count
+            )
+            if bad_report:
+                print(bad_report)
             if stats["n_used_bins"] < _MIN_FIT_BINS:
                 print(
                     f"TXMeanShearSurveyProperties: WARNING - '{name}' has only "
@@ -764,10 +854,15 @@ class TXMeanShearSurveyProperties(PipelineStage):
 
         ax.set_xlabel(safe_name)
         ax.set_ylabel("Mean shear")
+        # Two lines: against zero (offset and trend) and against a constant
+        # (bin-to-bin variation only), so an offset can be told apart from a trend.
         ax.set_title(
-            f"{safe_name}  ($\\chi^2_{{\\rm null}}$/dof = "
-            f"{stats['chi2_null']:.1f}/{stats['n_dof_null']}, "
-            f"p = {stats['chi2_null_pvalue']:.2g})"
+            f"{safe_name}\n"
+            f"vs zero: $\\chi^2$/dof = {stats['chi2_null']:.1f}/{stats['n_dof_null']}, "
+            f"p = {stats['chi2_null_pvalue']:.2g}    "
+            f"vs constant: $\\chi^2$/dof = {stats['chi2_const']:.1f}/{stats['n_dof_const']}, "
+            f"p = {stats['chi2_const_pvalue']:.2g}",
+            fontsize=10,
         )
         ax.legend(fontsize=8)
         # Explicit spacing rather than tight_layout: the map colorbar and the
