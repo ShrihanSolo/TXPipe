@@ -19,6 +19,9 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 STAGE_FILE = HERE.parent / "txpipe" / "survey_property_null_tests.py"
+# The real DP2 footprint: nest nside-128 pixels holding kept stars in the
+# fiducial rho run of the DP2 PSF-star catalog (inside the shear mask).
+DP2_FOOTPRINT = "/workspace/TXPipe-notes/replot/dp2_footprint_nest128.npy"
 
 
 def load_stage_module():
@@ -105,6 +108,13 @@ def example_bins(vals, nbins=20, min_count=1000, low_bins=True, outliers=False,
     return mu, g1, g2, sigma, sigma.copy(), counts, min_count
 
 
+def footprint_from_file(nside, path=DP2_FOOTPRINT, nside_file=128):
+    """Nest pixels at nside_file (e.g. the DP2 shear-mask footprint), upgraded to nside."""
+    pix = np.load(path)
+    k = (nside // nside_file) ** 2
+    return (pix[:, None] * k + np.arange(k)).ravel()
+
+
 # name: (footprint, nside, options for example_bins)
 SCENARIOS = {
     "small_field": (lambda n: footprint_disc(n, 53.1, -28.1, 1.2), 4096, {}),
@@ -112,6 +122,7 @@ SCENARIOS = {
     "big_errors": (lambda n: footprint_disc(n, 53.1, -28.1, 1.2), 4096, {"big_errors": True}),
     "all_used": (lambda n: footprint_disc(n, 53.1, -28.1, 1.2), 4096, {"low_bins": False}),
     "band_100deg": (lambda n: footprint_band(n, -50, 50, -40, -30), 1024, {}),
+    "dp2_footprint": (footprint_from_file, 1024, {}),
     "several_fields": (lambda n: np.concatenate([
         footprint_disc(n, 53.1, -28.1, 1.2), footprint_disc(n, 59.1, -48.7, 1.2),
         footprint_disc(n, 6.0, -72.1, 1.0), footprint_disc(n, 95.0, -25.0, 1.0)]), 2048, {}),
