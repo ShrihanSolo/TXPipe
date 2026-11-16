@@ -123,6 +123,12 @@ SCENARIOS = {
     "all_used": (lambda n: footprint_disc(n, 53.1, -28.1, 1.2), 4096, {"low_bins": False}),
     "band_100deg": (lambda n: footprint_band(n, -50, 50, -40, -30), 1024, {}),
     "dp2_footprint": (footprint_from_file, 1024, {}),
+    # The map covers more than the shear catalog (extra fields, as the DP2
+    # coadd maps do); the panel must show only the DP2 shear footprint.
+    "dp2_map_wider": (lambda n: np.unique(np.concatenate([
+        footprint_from_file(n), footprint_disc(n, 95.0, -25.0, 3.0),
+        footprint_disc(n, 150.0, 2.0, 2.0), footprint_band(n, 20, 40, -45, -35)])),
+        1024, {}, footprint_from_file),
     "several_fields": (lambda n: np.concatenate([
         footprint_disc(n, 53.1, -28.1, 1.2), footprint_disc(n, 59.1, -48.7, 1.2),
         footprint_disc(n, 6.0, -72.1, 1.0), footprint_disc(n, 95.0, -25.0, 1.0)]), 2048, {}),
@@ -131,6 +137,7 @@ SCENARIOS = {
 
 class FakeStage:
     config = {"map_plot_nside": 256, "projection": "McBryde"}
+    galaxy_footprint = None
 
 
 def main():
@@ -142,13 +149,20 @@ def main():
     matplotlib.use("agg")
 
     for scenario in names:
-        footprint, nside, opts = SCENARIOS[scenario]
+        footprint, nside, opts, *galaxies = SCENARIOS[scenario]
         hsp_map, vals = example_map(footprint(nside), nside)
+        stage = FakeStage()
+        if galaxies:
+            # What choose_bin_edges records: the pixels holding measured galaxies.
+            fp_nside = mod._footprint_nside(stage.config["map_plot_nside"])
+            stage.galaxy_footprint = (fp_nside, np.unique(galaxies[0](fp_nside)))
+            gal_vals = mod._restrict_to_footprint(hsp_map, *stage.galaxy_footprint)
+            vals = gal_vals[gal_vals.valid_pixels]
         mu, g1, g2, s1, s2, counts, min_count = example_bins(vals, **opts)
         usable, stats = mod._null_test_statistics(mu, g1, g2, s1, s2, counts, min_count)
         path = outdir / f"{scenario}.png"
         mod.TXMeanShearSurveyProperties.plot_property(
-            FakeStage(), path, "sky_background_i", (hsp_map, nside),
+            stage, path, "sky_background_i", (hsp_map, nside),
             mu, g1, g2, s1, s2, usable, stats,
         )
         print(f"Wrote {path}")

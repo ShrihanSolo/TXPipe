@@ -405,6 +405,33 @@ def _marker_offset(mu):
     return 0.1 * gaps.min() if gaps.size else 0.0
 
 
+def _footprint_nside(map_plot_nside):
+    """Resolution of the measured-galaxy footprint: the map panel's, or 1024."""
+    return map_plot_nside if map_plot_nside else 1024
+
+
+def _restrict_to_footprint(hsp_map, fp_nside, fp_pixels):
+    """
+    A copy of ``hsp_map`` keeping only the pixels inside the footprint, given
+    as nest pixels at ``fp_nside`` (the pixels holding measured galaxies).
+    Works whether the map is finer or coarser than the footprint.
+    """
+    import healsparse
+
+    valid = hsp_map.valid_pixels
+    nside = hsp_map.nside_sparse
+    if nside >= fp_nside:
+        shift = 2 * int(round(np.log2(nside // fp_nside)))
+        keep = np.isin(valid >> shift, fp_pixels)
+    else:
+        shift = 2 * int(round(np.log2(fp_nside // nside)))
+        keep = np.isin(valid, np.unique(fp_pixels >> shift))
+    out = healsparse.HealSparseMap.make_empty_like(hsp_map)
+    if keep.any():
+        out[valid[keep]] = hsp_map[valid[keep]]
+    return out
+
+
 def _footprint_aspect(hsp_map):
     """
     Width over height of the map's footprint on the sky, from its coverage
@@ -703,14 +730,29 @@ class TXMeanShearSurveyProperties(PipelineStage):
         outlier_fraction = self.config["outlier_fraction"]
         ra_key, dec_key = cols["ra_key"], cols["dec_key"]
 
+        import healpy as hp
+
+        # The pixels holding measured galaxies, so that the map panel shows
+        # only the region the statistics come from, not the whole map.
+        fp_nside = _footprint_nside(self.config["map_plot_nside"])
+        fp_pixels = []
         sampled = {name: [] for name in all_maps}
         for s, e, data in self.catalog_iterator(cols):
             if self.rank == 0:
                 print(f"TXMeanShearSurveyProperties: bin-edge pass rows {s:,} – {e:,}")
             in_source_bin = data[cols["source_bin_key"]] != -1
+            fp_pixels.append(np.unique(hp.ang2pix(
+                fp_nside, data[ra_key][in_source_bin], data[dec_key][in_source_bin],
+                lonlat=True, nest=True,
+            )))
             for name, (hsp_map, nside) in all_maps.items():
                 vals = _property_values_at(hsp_map, nside, data[ra_key], data[dec_key])
                 sampled[name].append(vals[in_source_bin & np.isfinite(vals)])
+
+        fp_pixels = np.unique(np.concatenate(fp_pixels)) if fp_pixels else np.empty(0, int)
+        if self.comm is not None:
+            fp_pixels = np.unique(np.concatenate(self.comm.allgather(fp_pixels)))
+        self.galaxy_footprint = (fp_nside, fp_pixels)
 
         # Combine the sampled values across chunks and MPI ranks. allgather so
         # every rank builds identical binners later (their construction and
@@ -840,6 +882,9 @@ class TXMeanShearSurveyProperties(PipelineStage):
 
         safe_name = name.replace("/", "_")
         hsp_map, map_nside = map_info
+        footprint = getattr(self, "galaxy_footprint", None)
+        if footprint is not None:
+            hsp_map = _restrict_to_footprint(hsp_map, *footprint)
         # A footprint much wider than it is tall (a long survey stripe) would be
         # a thin strip beside the trend panel, so it goes above it instead.
         wide = _footprint_aspect(hsp_map) > 2.5
