@@ -1021,6 +1021,13 @@ class TXMeanShearSurveyProperties(PipelineStage):
                 cbar = sp.draw_colorbar(label=safe_name, location="bottom",
                                         fraction=0.05, pad=0.16, fontsize=9)
             cbar.outline.set_linewidth(0.6)
+            # A few ticks, with an offset when the range is tiny next to the
+            # values, so the tick labels cannot run into each other.
+            from matplotlib.ticker import MaxNLocator, ScalarFormatter
+            cbar.locator = MaxNLocator(nbins=6 if wide else 5)
+            cbar.formatter = ScalarFormatter(useOffset=True)
+            cbar.formatter.set_powerlimits((-3, 4))
+            cbar.update_ticks()
             # Centre the map and its bar: over the trend panel when stacked,
             # in their own cell otherwise.
             cell = map_ax.get_position()
@@ -1075,8 +1082,16 @@ class TXMeanShearSurveyProperties(PipelineStage):
             f"vs constant: $\\chi^2$/dof = {stats['chi2_const']:.1f}/{stats['n_dof_const']}, "
             f"$p$ = {stats['chi2_const_pvalue']:.2g}",
         )
-        # The legend goes below the panel, where it cannot cover any points.
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13 if wide else -0.14),
-                  ncol=3, frameon=False, columnspacing=1.0, handletextpad=0.3)
+        # The legend goes below the panel, where it cannot cover any points:
+        # in one row if that fits inside the figure, else in fewer columns.
+        fig.canvas.draw()
+        for ncol in (3, 2, 1):
+            leg = ax.legend(loc="upper center",
+                            bbox_to_anchor=(0.5, -0.13 if wide else -0.14),
+                            ncol=ncol, frameon=False, columnspacing=1.0,
+                            handletextpad=0.3)
+            box = leg.get_window_extent(fig.canvas.get_renderer())
+            if box.x0 >= 0 and box.x1 <= fig.bbox.width:
+                break
         return fig
 
