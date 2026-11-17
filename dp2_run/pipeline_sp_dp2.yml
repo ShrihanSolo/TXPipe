@@ -1,7 +1,10 @@
 # TXMeanShearSurveyProperties on the outputs of a DP2 tutorial run.
 #
-# Run the tutorial pipeline first (examples/dp2/analysis_rubin_metadetect.yml,
-# analysis_desc_metadetect_1.1.yml, or the 1 deg^2 analysis1.1-mini.yml).
+# Run the tutorial pipeline first
+# (examples/dp2/rubin_metadetect/analysis_rubin_metadetect.yml,
+# examples/dp2/desc_metadetect/analysis_desc_metadetect_1.1.yml, or the 1 deg^2
+# examples/dp2/desc_metadetect/analysis1.1-mini.yml). The tutorial outputs are
+# read from the directories those pipelines write to (tutorial_dir below).
 # Then, from the TXPipe repo root:
 #
 #   ceci dp2_run/pipeline_sp_dp2.yml -t catalog=rubin    # Rubin metadetect
@@ -16,10 +19,13 @@
 
 {% if catalog == "rubin" %}
   {% set pipe_name = "rubin_metadetect" %}
+  {% set tutorial_dir = "data/dp2/rubin_metadetect/rubin_metadetect" %}
 {% elif catalog == "mini" %}
   {% set pipe_name = "metadetect_desc_dp2_mini" %}
+  {% set tutorial_dir = "data/dp2/desc_metadetect/metadetect_desc_dp2_mini" %}
 {% else %}
   {% set pipe_name = "desc_metadetect_1.1" %}
+  {% set tutorial_dir = "data/dp2/desc_metadetect/desc_metadetect_1.1" %}
 {% endif %}
 
 stages:
@@ -47,7 +53,7 @@ inputs:
 {% if catalog == "rubin" %}
     # The Rubin pipeline cuts the registry catalog first (TXCutShearCatalog)
     # and writes the cut catalog to its output directory.
-    shear_catalog: data/{{ pipe_name }}/shear_catalog.hdf5
+    shear_catalog: {{ tutorial_dir }}/shear_catalog.hdf5
 {% elif catalog == "mini" %}
     # The 1 deg^2 cut-out that analysis1.1-mini.yml reads.
     shear_catalog: /global/cfs/cdirs/lsst/utilities/data-registry/lsst_desc_working/user/zuntz/.gen_paths/txpipe_dp2_shear_catalog_desc_metaDetect_1deg2_0.3.0/mini_desc_dp2_shear_catalog.hdf5
@@ -56,8 +62,8 @@ inputs:
     shear_catalog:
         id: 147
 {% endif %}
-    shear_tomography_catalog: data/{{ pipe_name }}/shear_tomography_catalog.hdf5
-    psf_maps: data/{{ pipe_name }}/psf_maps.hdf5
+    shear_tomography_catalog: {{ tutorial_dir }}/shear_tomography_catalog.hdf5
+    psf_maps: {{ tutorial_dir }}/psf_maps.hdf5
     # DP2 ingestion does not make depth or survey property maps. To test .hs
     # maps, set external_maps_dir in the config instead.
     depth_map: none
