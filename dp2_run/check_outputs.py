@@ -31,8 +31,14 @@ def recompute_chi2_const(grp, used):
 
 problems = []
 with h5py.File(path, "r") as f:
-    names = list(f.keys())
-    print(f"Maps tested: {len(names)}  (file: {path})\n")
+    # Only groups holding a map's results: the file also has other groups,
+    # e.g. the provenance written by ceci, which have no binned data.
+    names = [k for k in f.keys() if isinstance(f[k], h5py.Group) and "g1" in f[k]]
+    others = [k for k in f.keys() if k not in names]
+    print(f"Maps tested: {len(names)}  (file: {path})")
+    if others:
+        print(f"(other groups in the file, not maps: {', '.join(others)})")
+    print()
     print(f"{'map':40s} {'bins used':>9s} {'chi2_null/dof':>14s} {'p':>8s} "
           f"{'chi2_const/dof':>14s} {'p':>8s} "
           f"{'slope g1 / err':>15s} {'slope g2 / err':>15s}")
