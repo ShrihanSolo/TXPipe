@@ -101,11 +101,13 @@ def _bin_edges_from_values(vals, nbins, outlier_fraction):
     be removed by the caller.
 
     Maps taking only a few distinct values (integer counts such as
-    ``bright_objects/count``, or flag maps) are binned with one bin per value,
+    ``psf/count_2D``, or flag maps) are binned with one bin per value,
     centred on that value. Evenly spaced edges would instead land exactly *on*
     the integers, and since ``MeanShearInBins.selector`` selects with strict
     inequalities on both sides, every galaxy would then fall into no bin at all
-    and the test would silently come out empty.
+    and the test would silently come out empty. With more values than bins,
+    any evenly spaced edge that lands on a value is moved to halfway between
+    neighbouring values, for the same reason.
 
     Returns ``None`` if the sample has no usable range -- because no galaxy
     sampled the map, or because the property is constant across the sample and
@@ -135,7 +137,25 @@ def _bin_edges_from_values(vals, nbins, outlier_fraction):
             )
         )
 
-    return np.linspace(lo, hi, nbins + 1)
+    edges = np.linspace(lo, hi, nbins + 1)
+    # An edge can land exactly on a value, and the galaxies there would fall
+    # in no bin. This happens for integer maps (e.g. galaxy counts), and also
+    # for float maps, since every galaxy in a pixel shares that pixel's value
+    # and the outer edges (percentiles) are often a pixel's value. We then
+    # move each edge to the nearest point halfway between two values; the
+    # outer edges move outwards, so the values at lo and hi are kept.
+    if np.isin(edges, uniq).any():
+        halfway = np.concatenate((
+            [uniq[0] - 0.5 * (uniq[1] - uniq[0])],
+            0.5 * (uniq[1:] + uniq[:-1]),
+            [uniq[-1] + 0.5 * (uniq[-1] - uniq[-2])],
+        ))
+        j = np.clip(np.searchsorted(halfway, edges), 1, halfway.size - 1)
+        nearer_below = edges - halfway[j - 1] <= halfway[j] - edges
+        snapped = np.where(nearer_below, halfway[j - 1], halfway[j])
+        snapped[0], snapped[-1] = halfway[j[0] - 1], halfway[j[-1]]
+        edges = np.unique(snapped)
+    return edges
 
 
 def _counts_in_bins(vals, edges):

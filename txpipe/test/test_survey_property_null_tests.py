@@ -4,6 +4,7 @@ import healsparse as hsp
 
 from ..survey_property_null_tests import (
     _bin_edges_from_values,
+    _counts_in_bins,
     _property_values_at,
     _assign_property_column,
     _marker_offset,
@@ -96,6 +97,39 @@ def test_bin_edges_integer_values_select_every_value():
     assert _selected_by_strict_bins(vals, edges) == vals.size
     for v in vals:
         assert ((v > edges[:-1]) & (v < edges[1:])).sum() == 1
+
+
+def test_bin_edges_integer_counts_lose_no_galaxies():
+    """Integer maps with more values than bins: no value may sit on an edge."""
+    rng = np.random.default_rng(3)
+    for mean in (40, 400):
+        vals = rng.poisson(mean, 100_000).astype(float)
+        edges = _bin_edges_from_values(vals, 20, 0.05)
+        assert not np.isin(vals, edges).any()
+        lo = np.percentile(vals, 5)
+        hi = np.percentile(vals, 95)
+        inside = vals[(vals >= lo) & (vals <= hi)]
+        # Every value between the 5th and 95th percentiles is in exactly one bin.
+        assert _counts_in_bins(inside, edges).sum() == inside.size
+        assert np.all(np.diff(edges) > 0)
+
+
+def test_bin_edges_pixelized_float_map_loses_no_galaxies():
+    """Galaxies share their pixel's value, so a float map can hit an edge too."""
+    rng = np.random.default_rng(5)
+    pixel_values = rng.normal(2000.0, 50.0, 3000)
+    vals = pixel_values[rng.integers(0, pixel_values.size, 100_000)]
+    edges = _bin_edges_from_values(vals, 20, 0.05)
+    assert not np.isin(vals, edges).any()
+    inside = vals[(vals >= np.percentile(vals, 5)) & (vals <= np.percentile(vals, 95))]
+    assert _counts_in_bins(inside, edges).sum() == inside.size
+
+
+def test_bin_edges_float_map_unchanged_by_snapping():
+    vals = np.random.default_rng(4).normal(2000.0, 50.0, 50_000)
+    edges = _bin_edges_from_values(vals, 20, 0.05)
+    expected = np.linspace(np.percentile(vals, 5), np.percentile(vals, 95), 21)
+    assert np.array_equal(edges, expected)
 
 
 def test_bin_edges_none_when_constant():
