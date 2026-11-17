@@ -1,0 +1,75 @@
+diff --git a/examples/dp2/desc_metadetect/analysis_desc_metadetect_1.1.yml b/examples/dp2/desc_metadetect/analysis_desc_metadetect_and_sp_1.1.yml
+index d74c2a4e..afa63e64
+--- a/examples/dp2/desc_metadetect/analysis_desc_metadetect_1.1.yml
++++ b/examples/dp2/desc_metadetect/analysis_desc_metadetect_and_sp_1.1.yml
+@@ -1,3 +1,10 @@
++# The DESC metadetect v1.1 DP2 analysis (analysis_desc_metadetect_1.1.yml) plus
++# TXMeanShearSurveyProperties, the mean shear in bins of survey property maps.
++#
++# The outputs go in the same directory as the base analysis, so with
++# resume: true an existing run only adds the new stage. From the repo root:
++#   ceci examples/dp2/desc_metadetect/analysis_desc_metadetect_and_sp_1.1.yml
++
+ # Stages to run
+ # Processors for PZ stages. There's a bug in rail_base logging
+ # that crashes if you use too many. PR in progress.
+@@ -38,6 +45,8 @@ stages:
+     threads_per_process: 32
+   - name: TXDiagnosticQuantiles
+   - name: TXPSFMaps
++  - name: TXMeanShearSurveyProperties   # Mean shear vs survey property maps
++    nprocess: 16
+   - name: TXSourceDiagnosticPlots
+     nprocess: 64
+   - name: TXResponseInBins
+@@ -145,7 +154,7 @@ site:
+ 
+ 
+ # configuration settings
+-config: examples/dp2/desc_metadetect/config_{{ pipe_name }}.yml
++config: examples/dp2/desc_metadetect/config_desc_metadetect_and_sp_1.1.yml
+ 
+ # On NERSC, set this before running:
+ # export DATA=${LSST}/groups/WL/users/zuntz/data/metacal-testbed
+@@ -167,6 +176,9 @@ inputs:
+     binned_random_catalog: none
+     binned_random_catalog_sub: none
+     lens_photoz_stack: none
++    # No DP2 ingestion stage writes survey property maps yet, so the .hs files
++    # are given with external_maps_dir in the config instead.
++    survey_property_maps: none
+     mask:
+       id: 148
+     shear_catalog:
+diff --git a/examples/dp2/desc_metadetect/config_desc_metadetect_1.1.yml b/examples/dp2/desc_metadetect/config_desc_metadetect_and_sp_1.1.yml
+index 07786af0..79472e7e 100644
+--- a/examples/dp2/desc_metadetect/config_desc_metadetect_1.1.yml
++++ b/examples/dp2/desc_metadetect/config_desc_metadetect_and_sp_1.1.yml
+@@ -1,3 +1,4 @@
++# config_desc_metadetect_1.1.yml plus a section for TXMeanShearSurveyProperties.
+ global:
+     chunk_rows: 1000000
+     nside: 2048
+@@ -258,3 +259,22 @@ TXSmokescreenBlinding:
+     b0: 0.95  ## TXPipe theory model lens bias, of the form b0/growth
+     seed: "Boitata was here"
+     delete_unblinded: true
++
++
++TXMeanShearSurveyProperties:
++    nbins: 20
++    min_count: 50
++    outlier_fraction: 0.05
++    delta_gamma: 0.02      # as in TXComputeShearCalibrationScalarMetadetectDP2
++    # Empty list: test every map; otherwise list names, e.g. ["psf/g1_2D"].
++    properties: []
++    # Only the non-tomographic PSF maps from TXPSFMaps.
++    psf_map_bins: ["2D"]
++    # Directory of DP2 survey property maps (.hs healsparse files). They are
++    # not in the data registry yet; dp2_run/convert_dp2_sp_maps.py on the
++    # fork makes them from the DP2 butler repo at NERSC. With "" only the
++    # PSF maps are tested.
++    external_maps_dir: ""
++    bands: [i]
++    map_plot_nside: 256
++    projection: McBryde
