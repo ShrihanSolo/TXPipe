@@ -2,8 +2,12 @@
 Compare the DESC metadetect v1.1 masks in the data registry: full (361), wide (360), deep (359),
 and the old mask (148) used by the current TXPipe DP2 example.
 
-For each mask it prints the area, and how much of it lies inside each of the others; then it draws
-one map with every pixel coloured by which masks contain it, plus one small panel per mask.
+For each mask it prints the area, how much of it lies inside each of the others, and whether full is
+exactly wide + deep; then it draws one map with every pixel coloured by which masks contain it, plus one
+small panel per mask.
+
+The masks are at very high resolution (nside 131072), far too big to hold in memory as pixel lists, so
+each one is read one coverage pixel at a time and summed into a coarse map of the covered fraction.
 
 Run at NERSC from the repo root, in the DESC env (source bin/setup-nersc):
     python dp2_run/compare_masks.py                       # finds the files by registry name
@@ -13,6 +17,7 @@ Writes mask_comparison.png in the current directory.
 import glob
 import os
 import sys
+import time
 
 import h5py
 import healpy as hp
@@ -23,18 +28,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 REGISTRY = "/global/cfs/cdirs/lsst/utilities/data-registry"
-# label: (registry id, dataset name). The old mask's name is a guess from the old catalog's path.
+# label: (registry id, dataset name or None). The old mask is looked up by id instead.
 MASKS = {
     "full": (361, "txpipe_desc_metadetect_v1.1_mask_full"),
     "wide": (360, "txpipe_desc_metadetect_v1.1_mask_wide"),
     "deep": (359, "txpipe_desc_metadetect_v1.1_mask_deep"),
-    "old": (148, "txpipe_dp2_shear_catalog_desc_metaDetect_mask"),
+    "old": (148, None),
 }
-PLOT_NSIDE = 512   # resolution for the picture only (about 0.11 deg pixels); areas use the native nside
+WORK_NSIDE = 512   # areas and overlaps (pixels of about 0.11 deg; edge pixels count as fractions)
+PLOT_NSIDE = 512   # the picture only (about 0.11 deg pixels)
 
 
-def find_file(name):
-    """The registry stores each dataset in <registry>/<schema>/<owner type>/<owner>/.gen_paths/<name>_<version>/."""
+def find_by_name(name):
+    """The registry keeps each dataset in <registry>/<schema>/<owner type>/<owner>/.gen_paths/<name>_<version>/."""
     dirs = []
     for depth in ("*/*/*/.gen_paths", "*/*/.gen_paths", "*/.gen_paths"):
         dirs += glob.glob(f"{REGISTRY}/{depth}/{name}_[0-9]*")
@@ -43,28 +49,82 @@ def find_file(name):
         return None
     newest = sorted(dirs, key=os.path.getmtime)[-1]
     files = sorted(glob.glob(f"{newest}/*.hdf5") + glob.glob(f"{newest}/*.hs"))
-    if len(dirs) > 1:
-        print(f"  note: {len(dirs)} versions of {name}; using the newest, {os.path.basename(newest)}")
     return files[0] if files else None
 
 
-def read_mask(path):
-    """Read a TXPipe mask file (maps/mask, healsparse or legacy pixel/value) or a plain healsparse file."""
+def find_by_id(dataset_id):
+    """Ask the data registry for a dataset's path. Returns None if the client isn't available."""
+    try:
+        from dataregistry import DataRegistry
+        reg = DataRegistry()
+        path = reg.Query.get_dataset_absolute_path(dataset_id)
+    except Exception as e:  # no client, no access, or a different API version
+        print(f"  (registry lookup of id {dataset_id} failed: {type(e).__name__}: {e})")
+        return None
+    if os.path.isdir(path):
+        files = sorted(glob.glob(f"{path}/*.hdf5") + glob.glob(f"{path}/*.hs"))
+        path = files[0] if files else None
+    return path
+
+
+def old_mask_candidates():
+    """Older DP2 mask datasets in the registry, to help pick the old mask by hand."""
+    out = []
+    for depth in ("*/*/*/.gen_paths", "*/*/.gen_paths"):
+        for d in glob.glob(f"{REGISTRY}/{depth}/*"):
+            b = os.path.basename(d).lower()
+            if "mask" in b and "dp2" in b and "v1.1" not in b and "1deg2" not in b:
+                out.append(d)
+    return sorted(out)
+
+
+def coverage_fraction(path):
+    """
+    The mask summed into WORK_NSIDE pixels: returns (pixels, covered fraction), nest ordering.
+
+    A mask value is the usable fraction of a native pixel, so a coarse pixel's fraction is the sum of
+    its native values divided by the number of native pixels inside it.
+    """
     if path.endswith(".hs"):
-        return hsp.HealSparseMap.read(path)
-    with h5py.File(path, "r") as f:
-        group = f["maps/mask"]
-        if "healsparse" in group:
-            pass  # read below with healsparse, after the file is closed
-        else:
-            nside, nest = group.attrs["nside"], group.attrs["nest"]
-            pix, val = group["pixel"][:], group["value"][:]
-            if not nest:
-                pix = hp.ring2nest(nside, pix)
-            m = hsp.HealSparseMap.make_empty(32, nside, dtype=val.dtype)
-            m.update_values_pix(pix, val)
-            return m
-    return hsp.HealSparseMap.read(path, hdf5_group="maps/mask/healsparse")
+        group, legacy = None, False
+    else:
+        with h5py.File(path, "r") as f:
+            g = f["maps/mask"]
+            legacy = "healsparse" not in g
+            group = "maps/mask/healsparse"
+    total = {}
+
+    def add(pix, val, nside):
+        shift = 2 * int(round(np.log2(nside // WORK_NSIDE))) if nside > WORK_NSIDE else 0
+        coarse = pix >> shift
+        u, inv = np.unique(coarse, return_inverse=True)
+        s = np.bincount(inv, weights=val.astype(float)) / 4 ** (shift // 2)
+        for p, x in zip(u, s):
+            total[p] = total.get(p, 0.0) + x
+
+    if legacy:  # datasets "pixel" and "value": read them in slices
+        with h5py.File(path, "r") as f:
+            g = f["maps/mask"]
+            nside, nest = int(g.attrs["nside"]), bool(g.attrs["nest"])
+            n = g["pixel"].shape[0]
+            for s in range(0, n, 20_000_000):
+                pix, val = g["pixel"][s:s + 20_000_000], g["value"][s:s + 20_000_000]
+                if not nest:
+                    pix = hp.ring2nest(nside, pix)
+                add(pix, val, nside)
+    else:  # healsparse: read one coverage pixel at a time
+        kw = {"hdf5_group": group} if group else {}
+        cov = hsp.HealSparseCoverage.read(path, **kw)
+        cov_pix = np.where(cov.coverage_mask)[0]
+        nside = None
+        for c in cov_pix:
+            m = hsp.HealSparseMap.read(path, pixels=[c], **kw)
+            nside = m.nside_sparse
+            pix = m.valid_pixels
+            add(pix, m[pix], nside)
+    pix = np.array(sorted(total), dtype=np.int64)
+    frac = np.array([total[p] for p in pix])
+    return pix, frac, nside
 
 
 def main():
@@ -74,66 +134,75 @@ def main():
         paths[label] = path
     for label, (did, name) in MASKS.items():
         if label not in paths:
-            paths[label] = find_file(name)
+            paths[label] = find_by_name(name) if name else find_by_id(did)
 
-    masks = {}
     print("Masks found:")
+    maps = {}
     for label, path in paths.items():
         if path is None:
             print(f"  {label:5s}: NOT FOUND (give it by hand: {label}=/path/to/mask.hdf5)")
+            if label == "old":
+                cands = old_mask_candidates()
+                if cands:
+                    print("         older DP2 mask datasets in the registry:")
+                    for c in cands:
+                        print(f"           {c}")
             continue
-        m = read_mask(path)
-        masks[label] = m
-        print(f"  {label:5s}: nside {m.nside_sparse}, {path}")
-    if not masks:
+        t0 = time.time()
+        pix, frac, nside = coverage_fraction(path)
+        maps[label] = (pix, frac)
+        print(f"  {label:5s}: native nside {nside}, read in {time.time() - t0:.0f} s, {path}")
+    if not maps:
         sys.exit("No masks found.")
+    labels = list(maps)
 
-    # Areas at native resolution. A mask value is the fraction of the pixel that is usable,
-    # so the area is the sum of the values times the pixel area.
-    print("\nArea of each mask (deg^2):")
-    print(f"  {'mask':5s} {'pixels set':>12s} {'area':>9s}  (area counting partial pixels as fractions)")
-    for label, m in masks.items():
-        pix = m.valid_pixels
-        val = m[pix].astype(float)
-        pixarea = hp.nside2pixarea(m.nside_sparse, degrees=True)
-        print(f"  {label:5s} {pix.size:12d} {pix.size * pixarea:9.1f}  ({val.sum() * pixarea:.1f})")
+    # One table over all coarse pixels that any mask touches.
+    allpix = np.unique(np.concatenate([p for p, f in maps.values()]))
+    F = np.zeros((len(labels), allpix.size))
+    for i, l in enumerate(labels):
+        p, f = maps[l]
+        F[i, np.searchsorted(allpix, p)] = f
+    pixarea = hp.nside2pixarea(WORK_NSIDE, degrees=True)
 
-    # Overlaps, compared at the finest common nside (exact if all masks have the same nside).
-    nside = min(m.nside_sparse for m in masks.values())
-    sets = {}
-    for label, m in masks.items():
-        pix = m.valid_pixels
-        shift = 2 * int(np.log2(m.nside_sparse // nside))
-        sets[label] = np.unique(pix >> shift)  # nest pixel at the coarser nside
-    labels = list(sets)
-    print(f"\nOverlap (at nside {nside}): row % of the ROW mask's area that lies inside the COLUMN mask")
+    print("\nArea of each mask (deg^2, partial pixels counted as fractions):")
+    for i, l in enumerate(labels):
+        print(f"  {l:5s} {F[i].sum() * pixarea:9.1f}")
+
+    print(f"\nOverlap: % of the ROW mask's area that is also in the COLUMN mask"
+          f" (at nside {WORK_NSIDE}, about 0.11 deg; approximate only at the edges)")
     print("  " + " " * 6 + "".join(f"{b:>8s}" for b in labels))
-    for a in labels:
-        row = [100 * np.isin(sets[a], sets[b], assume_unique=True).mean() for b in labels]
+    for i, a in enumerate(labels):
+        row = [100 * np.minimum(F[i], F[j]).sum() / F[i].sum() for j in range(len(labels))]
         print(f"  {a:6s}" + "".join(f"{x:7.1f}%" for x in row))
-    if {"full", "wide", "deep"} <= set(sets):
-        union = np.union1d(sets["wide"], sets["deep"])
-        both = np.intersect1d(sets["wide"], sets["deep"]).size
-        same = np.array_equal(union, sets["full"])
-        print(f"\n  Is full exactly wide + deep?  {'YES' if same else 'NO'}"
-              f"  (wide and deep share {both} pixels at nside {nside})")
 
-    # The picture: coarse pixels, coloured by which masks contain them.
-    plot = {}
-    for label, m in masks.items():
-        shift = 2 * int(np.log2(m.nside_sparse // PLOT_NSIDE)) if m.nside_sparse > PLOT_NSIDE else 0
-        plot[label] = np.unique(m.valid_pixels >> shift)
-    allpix = np.unique(np.concatenate(list(plot.values())))
-    ra, dec = hp.pix2ang(PLOT_NSIDE, allpix, nest=True, lonlat=True)
+    if {"full", "wide", "deep"} <= set(labels):
+        f, w, d = (F[labels.index(k)] for k in ("full", "wide", "deep"))
+        extra = np.clip(f - w - d, 0, None).sum() * pixarea  # in full but in neither wide nor deep
+        missing = np.clip(w + d - f, 0, None).sum() * pixarea  # in wide or deep but not in full
+        both = np.minimum(w, d).sum() * pixarea
+        print(f"\nIs full = wide + deep?")
+        print(f"  area in full but in neither wide nor deep: {extra:8.2f} deg^2")
+        print(f"  area in wide or deep but not in full:      {missing:8.2f} deg^2")
+        print(f"  area in both wide and deep:                {both:8.2f} deg^2")
+        verdict = "YES (to within the edge pixels)" if max(extra, missing) < 0.01 * f.sum() * pixarea else "NO"
+        print(f"  => {verdict}")
+
+    # The picture: which masks contain each (coarser) pixel.
+    shift = 2 * int(round(np.log2(WORK_NSIDE // PLOT_NSIDE)))
+    ppix = allpix >> shift
+    upix, inv = np.unique(ppix, return_inverse=True)
+    inside = np.zeros((len(labels), upix.size), bool)
+    for i in range(len(labels)):
+        inside[i] = np.bincount(inv, weights=F[i], minlength=upix.size) > 0
+    ra, dec = hp.pix2ang(PLOT_NSIDE, upix, nest=True, lonlat=True)
     if np.ptp(ra) > 180:  # the footprint crosses RA = 0: show RA from -180 to 180
         ra = np.where(ra > 180, ra - 360, ra)
-    member = np.array([np.isin(allpix, plot[l]) for l in labels])  # one row per mask
-    codes = [" + ".join(l for l, x in zip(labels, col) if x) for col in member.T]
-    kinds = sorted(set(codes), key=lambda c: -codes.count(c))
+    codes = np.array([" + ".join(l for l, x in zip(labels, col) if x) for col in inside.T])
+    kinds = sorted(set(codes), key=lambda c: -(codes == c).sum())
     cmap = plt.get_cmap("tab10")
+    pa = hp.nside2pixarea(PLOT_NSIDE, degrees=True)
 
     n = len(labels)
-    # Size the figure to the footprint's shape so the panels fill it.
     squash = np.cos(np.radians(np.median(dec)))
     shape = max(np.ptp(dec), 1) / max(np.ptp(ra) * squash, 1)  # height / width on the sky
     width = max(4 * n, 12)
@@ -142,17 +211,17 @@ def main():
     fig = plt.figure(figsize=(width, top_h + row_h), layout="constrained")
     sub = fig.subfigures(2, 1, height_ratios=[top_h, row_h])
     ax = sub[0].subplots()
-    codes = np.array(codes)
+    msize = 4
     for i, k in enumerate(kinds):
         w = codes == k
-        ax.scatter(ra[w], dec[w], s=1.5, marker="s", linewidths=0, color=cmap(i % 10),
-                   label=f"{k}  ({w.sum()} px)")
-    ax.legend(markerscale=6, fontsize=9, title="pixel is in", loc="best")
+        ax.scatter(ra[w], dec[w], s=msize, marker="s", linewidths=0, color=cmap(i % 10),
+                   label=f"{k}  (~{w.sum() * pa:.0f} deg$^2$)")
+    ax.legend(markerscale=3, fontsize=9, title="pixel is in", loc="best")
     ax.set_title("Which masks contain each pixel")
     axes = list(np.atleast_1d(sub[1].subplots(1, n, sharex=True, sharey=True)))
-    for a, l, row in zip(axes, labels, member):
-        a.scatter(ra[~row], dec[~row], s=0.5, marker="s", linewidths=0, color="0.85")
-        a.scatter(ra[row], dec[row], s=0.5, marker="s", linewidths=0, color="C0")
+    for a, l, row in zip(axes, labels, inside):
+        a.scatter(ra[~row], dec[~row], s=1, marker="s", linewidths=0, color="0.85")
+        a.scatter(ra[row], dec[row], s=1, marker="s", linewidths=0, color="C0")
         a.set_title(f"{l} (id {MASKS.get(l, ('?',))[0]})")
     for a in [ax] + axes:
         a.set_xlabel("RA [deg]")
@@ -161,7 +230,7 @@ def main():
     ax.invert_xaxis()
     axes[0].invert_xaxis()  # the small panels share one x axis, so invert it once
     fig.savefig("mask_comparison.png", dpi=130)
-    print("\nWrote mask_comparison.png")
+    print(f"\nWrote {os.path.abspath('mask_comparison.png')}")
 
 
 if __name__ == "__main__":
