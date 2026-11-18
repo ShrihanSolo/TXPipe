@@ -7,7 +7,8 @@ exactly wide + deep; then it draws one map with every pixel coloured by which ma
 small panel per mask.
 
 The masks are at very high resolution (nside 131072), far too big to hold in memory as pixel lists, so
-each one is read one coverage pixel at a time and summed into a coarse map of the covered fraction.
+each one is reduced to a coarse map of the covered fraction with healsparse's fracdet_map, as
+TXPipe's MapsFile.read_mask(degrade_nside=...) does.
 
 Run at NERSC from the repo root, in the DESC env (source bin/setup-nersc):
     python dp2_run/compare_masks.py                       # finds the files by registry name
@@ -112,16 +113,19 @@ def coverage_fraction(path):
                 if not nest:
                     pix = hp.ring2nest(nside, pix)
                 add(pix, val, nside)
-    else:  # healsparse: read one coverage pixel at a time
+    else:  # healsparse: load it whole and use fracdet_map, as TXPipe's MapsFile.read_mask does
         kw = {"hdf5_group": group} if group else {}
-        cov = hsp.HealSparseCoverage.read(path, **kw)
-        cov_pix = np.where(cov.coverage_mask)[0]
-        nside = None
-        for c in cov_pix:
-            m = hsp.HealSparseMap.read(path, pixels=[c], **kw)
-            nside = m.nside_sparse
-            pix = m.valid_pixels
-            add(pix, m[pix], nside)
+        m = hsp.HealSparseMap.read(path, **kw)
+        nside = m.nside_sparse
+        print(f"    loaded {os.path.basename(path)}: dtype {m.dtype}, nside {nside}, "
+              f"coverage nside {m.nside_coverage}")
+        if np.issubdtype(m.dtype, np.floating):
+            print("    (float mask: the fraction below counts set pixels and ignores fractional values)")
+        fd_nside = max(WORK_NSIDE, m.nside_coverage)  # fracdet_map can't go coarser than the coverage map
+        fd = m.fracdet_map(fd_nside)
+        del m
+        pix = fd.valid_pixels
+        add(pix, fd[pix], fd_nside)  # averages down to WORK_NSIDE if fd_nside is finer
     pix = np.array(sorted(total), dtype=np.int64)
     frac = np.array([total[p] for p in pix])
     return pix, frac, nside
